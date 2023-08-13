@@ -49,6 +49,15 @@ uniform float pSSDOAmount <
     ui_step = 0.01;
 > = 1.5;
 
+uniform float pSSDOMaxLuma <
+    ui_label = "SSDO Max Lumainance Threshold";
+    ui_tooltip = "Reducing shadows when the luminance exceeds this value.";
+    ui_type = "slider";
+    ui_min = 0.0;
+    ui_max = 1;
+    ui_step = 0.01;
+> = 0.25;
+
 uniform float pSSDOBounceMultiplier <
     ui_label = "SSDO Indirect Bounce Color Multiplier";
     ui_tooltip = "SSDO includes an indirect bounce of light which means that colors of objects may interact with each other. This value controls the effects' visibility.";
@@ -336,8 +345,11 @@ float4 viewSpace(float2 txCoords)
 			ssdo += albedoFetch * visibility * distFade * distFade * pSSDOAmount;
 		}
 		ssdo /= pSSDOSampleAmount;
-		
-		return float4(saturate(1-ssdo*(smoothstep(pSSDOFadeEnd,pSSDOFadeStart,vsOrig.w)-smoothstep(pSSDOFadeStartNear,pSSDOFadeEndNear,vsOrig.w))),vsOrig.w);
+
+		float4 backbuffer = tex2D(ReShade::BackBuffer,txCoords);
+		float luma = dot(backbuffer.xyz, lumaCoeff);
+		float4 color = float4(saturate(1-ssdo*(smoothstep(pSSDOFadeEnd,pSSDOFadeStart,vsOrig.w)-smoothstep(pSSDOFadeStartNear,pSSDOFadeEndNear,vsOrig.w))),vsOrig.w);
+		return lerp(color, float4(1.0,1.0,1.0,color.a), max(0.0, smoothstep(pSSDOMaxLuma, 1.0, luma)));
 	}
 
 	// Depth-Bilateral Gaussian Blur - Horizontal
@@ -465,7 +477,7 @@ float4 PS_SetOriginal(VS_OUTPUT_POST IN) : COLOR
 // +++++   TECHNIQUES   +++++
 //++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
-technique PPFXSSDO_M < ui_label = "PPFX SSDO M"; ui_tooltip = "Screen Space Directional Occlusion | Ambient Occlusion simulates diffuse shadows/self-shadowing of geometry.\nIndirect Lighting brightens objects that are exposed to a certain 'light source' you may specify in the parameters below.\nThis approach takes directional information into account and simulates indirect light bounces, approximating global illumination."; >
+technique PPFXSSDO_X < ui_label = "PPFX SSDO X"; ui_tooltip = "Screen Space Directional Occlusion | Ambient Occlusion simulates diffuse shadows/self-shadowing of geometry.\nIndirect Lighting brightens objects that are exposed to a certain 'light source' you may specify in the parameters below.\nThis approach takes directional information into account and simulates indirect light bounces, approximating global illumination."; >
 {
 	pass setOriginal
 	{
