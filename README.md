@@ -1,5 +1,7 @@
 # FFXIV Enhanced Game Play
 
+| **中文** | [English](README_EN.md) |
+
 ![image](https://github.com/MapleRecall/reshade-FFXIV-EnhancedGamePlay/assets/18360825/1600a1f7-3f93-4f99-9a23-f980539e96ec)
 
 一个相对温和的用于《最终幻想XIV》的ReShade预设，适合绝大多数日常游玩场景，包含了一些改进过的 Shaders。
@@ -8,6 +10,21 @@
 本预设通过一些相对的克制改动来解决一些游戏常常被诟病的问题，并增加一些质感，同时针对剧情和轻量拍摄提供了一些快捷预设。
 
 > 本文档中所有图片均为该预设下的截图，无任何其它额外调整
+
+## 针对7.0的更新
+
+7.0的光照有了不小的改进，相比以往高光过饱与死亡打光缓解了一些，所以整体改动为降低一些颜色相关效果的强度，整体风格并没有什么变化。
+另外还更新了 AO 和 GI 的 Shader。
+
+* 现在 Max 和 Balance 都使用更高效准确的 [MartysMods_MXAO](https://github.com/martymcmodding/iMMERSE/blob/main/Shaders/MartysMods_MXAO.fx)，现在两者效果非常接近了。而 Lite 则继续使用 [Glamayre_Fast_Effects](https://github.com/rj200/Glamarye_Fast_Effects_for_ReShade/blob/main/Shaders/Glamayre_Fast_Effects.fx) 的快速 AO。
+* Max 新增了 [RadiantGI](https://github.com/BlueSkyDefender/AstrayFX/commits/master/Shaders/RadiantGI.fx) 作为 GI 补充，大部分地方并不会有非常明显的效果，但是开销非常大，建议在帧率不敏感的环境下使用。
+* 考虑到 7.0 新增的 DLSS 和 FSR，现在统一使用 CAS 锐化，轻微提高了锐化的强度。
+
+另外现在 REST 的 UI 屏蔽方案没有开关切换的问题了，所以 FFKeepUIX 的使用也不再是必须的，默认不再启用 FFKeepUIX。
+
+关于 REST，可以手动安装 [REST](https://github.com/4lex4nder/ReshadeEffectShaderToggler) 或者直接使用 [ReShade-CN2 整合包](https://github.com/liuxd17thu/reshade/)。
+
+使用 REST 方案还可以解决 AO 盖住半透明物体（如眼镜、发梢等）的问题，如果有需要可以使用 [ReshadeEffectShaderToggler.ini](reshade-addons/ReshadeEffectShaderToggler.ini) 覆盖 REST 的配置文件。
 
 ## 这个预设解决了什么问题？
 
@@ -21,7 +38,7 @@
 
 4. FFXIV 的 AO 表现比较的微妙，强弱两档比较生硬，HBAO的半径又过大，没有细节表现。这个预设添加了一些额外的AO，让人物和环境更具有立体感，表现更真实。
 
-5. 使用了改进过的 FFKeepUI，可以解决部分职业量普遮罩的问题，并不会引入 REST 的解决方案的各种问题。
+5. <del>使用了改进过的 FFKeepUI，可以解决部分职业量普遮罩的问题，并不会引入 REST 的解决方案的各种问题。</del>
 
 ![image](https://github.com/MapleRecall/reshade-FFXIV-EnhancedGamePlay/assets/18360825/2ee27864-05fc-417d-bb8f-f1ee060f5964)
 
@@ -38,13 +55,14 @@
 ![image](https://github.com/MapleRecall/reshade-FFXIV-EnhancedGamePlay/assets/18360825/c1f88868-d77a-401d-a2d0-93f7ebbcf369)
 
 ## 预设详解
+
 本预设使用了一些自定义的 Shaders，并按照一定的规则与顺序组合而成。如果你对这些细节感兴趣，可以参考[这个文档](Shaders&Effects.md)。
 
 ## 使用方法
 
 ### 安装
 
-该预设基于原版 ReShade，单独提供了一些 ReShade 没有包含和来自或改进于 GShade 的 Shaders。 
+该预设基于原版 ReShade，单独提供了一些 ReShade 没有包含和来自或改进于 GShade 的 Shaders。
 
 1. 安装原版 ReShade，为简单起见你需要在安装时选择下载所有 ReShade 安装包提供的 Shader。当然你也可以使用 [ReShade-CN2 整合包](https://github.com/liuxd17thu/reshade/)
 
@@ -66,8 +84,8 @@
 
 8. 在 ReShade 的主页面中选择 `Enhanced_XIV_GamePlay` 作为预设，预设分为 `Max`，`Balance` 和 `Lite` 三种，分别对应不同的性能开销，具体见下文。
 
-9. 如果你需要处理诗人、占星和武僧的职业量普遮罩问题，请参考[这个文档中 FFKeepUIX 部分的使用方法](Shaders&Effects.md)。。
-   
+9. <del>如果你需要处理诗人、占星和武僧的职业量普遮罩问题，请参考[这个文档中 FFKeepUIX 部分的使用方法](Shaders&Effects.md)。</del>
+
 ![image](https://github.com/MapleRecall/reshade-FFXIV-EnhancedGamePlay/assets/18360825/0a4b95af-428d-4246-860d-d071ea176e88)
 
 ### 预置快捷键
@@ -78,7 +96,7 @@
 2. <kbd>F11</kbd>：开关自动 DOF，用于为过场剧情提供自动景深
 3. <kbd>Shift</kbd> + <kbd>F10</kbd>：开关 21:9 的黑边，不会遮挡 UI
 4. <kbd>Shift</kbd> + <kbd>F11</kbd>：开关锐化和 AO 之外的所有效果
-   
+
 ![image](https://github.com/MapleRecall/reshade-FFXIV-EnhancedGamePlay/assets/18360825/27217a63-9d1d-42cb-9c38-6884ff84cb87)
 
 ## 配置对比
@@ -87,24 +105,24 @@
 
 ### Enhanced_XIV_GamePlay_0_Max：最高预设
 
-* 使用 CAS 锐化
-* 使用 MAXO 提供近距离，精细的 AO
-* 使用 SSDO 提供中等距离的广泛的 AO
+* 使用 MartysMods_MXAO 提供高质量的 AO
+* 使用 Glamayre_Fast_Effects 提供粗略的 GI
+* 使用 RadiantGI 提供一些精细 GI （性能开销较大）
 
-### Enhanced_XIV_GamePlay_1_Balance：平衡预设
+### Enhanced_XIV_GamePlay_1_Balance：平衡预设 【推荐】
 
-性能开销为 Max 的 70% 左右
+性能开销为 Max 的 60% 左右
 
-* 使用 Glamayre_Fast_Effects 锐化
-* 使用 SSDO 所有 AO
+* 使用 MartysMods_MXAO 提供高质量的 AO
+* 使用 Glamayre_Fast_Effects 提供粗略的 GI
 
 ### Enhanced_XIV_GamePlay_2_Lite：轻量预设
 
-性能开销为 Max 的 45% 左右
+性能开销为 Max 的 35% 左右
 
-* 使用 Glamayre_Fast_Effects 锐化
 * 使用 Glamayre_Fast_Effects 提供 AO，效果不如上面的精细（不凑近看也还行嘛！）
-* 不使用 AnamorphicFlare
+* 使用 Glamayre_Fast_Effects 提供粗略的 GI
+* 不使用 AnamorphicFlare 提供的镜头炫光效果
 
 ## 一些对比
 
@@ -129,5 +147,3 @@
 ![image](https://github.com/MapleRecall/reshade-FFXIV-EnhancedGamePlay/assets/18360825/6e741548-7b66-4f48-98e7-7653aac1c254)
 ![image](https://github.com/MapleRecall/reshade-FFXIV-EnhancedGamePlay/assets/18360825/c32d80c3-8803-4569-9787-c1faf1d52a76)
 ![image](https://github.com/MapleRecall/reshade-FFXIV-EnhancedGamePlay/assets/18360825/2856ce37-38c2-4c69-98c7-34a5e3c0d2c5)
-
-

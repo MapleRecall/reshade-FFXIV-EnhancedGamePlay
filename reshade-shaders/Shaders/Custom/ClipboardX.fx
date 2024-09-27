@@ -51,6 +51,13 @@ uniform float BlendIntensitySky <
 	ui_step = 0.001;
 > = 1.0;
 
+
+uniform bool Debug <
+    ui_label = "Debug Alpha";
+    ui_type = "radio";
+> = false;
+
+
 // -------------------------------------
 // Entrypoints
 // -------------------------------------
@@ -63,6 +70,19 @@ void PS_CopyX(float4 pos : SV_Position, float2 texCoord : TEXCOORD, out float4 f
 void PS_PasteX(float4 pos : SV_Position, float2 texCoord : TEXCOORD, out float4 frontColor : SV_Target)
 {
 	const float4 backColor = tex2D(ReShade::BackBuffer, texCoord);
+
+	if (Debug)
+    {
+
+		if (step(1, pos.x / 32 % 2) == step(1, pos.y / 32 % 2))
+			frontColor = lerp(0.45, backColor, backColor.a);
+		else
+			frontColor = lerp(0.55, backColor, backColor.a);
+			frontColor.a *= backColor.a;
+
+        return;
+    }
+
 
 	frontColor = tex2D(Sampler, texCoord);
 
