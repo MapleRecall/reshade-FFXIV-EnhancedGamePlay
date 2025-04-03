@@ -29,15 +29,6 @@ uniform float3 fAnamFlareColor <
 
 // If 1, only pixels with depth = 1 get lens flares
 // This prevents white objects from getting lens flares sources, which would normally happen in LDR
-#ifndef LENZ_DEPTH_CHECK
-	#define LENZ_DEPTH_CHECK 0
-#endif
-#ifndef CHAPMAN_DEPTH_CHECK
-	#define CHAPMAN_DEPTH_CHECK 0
-#endif
-#ifndef GODRAY_DEPTH_CHECK
-	#define GODRAY_DEPTH_CHECK 0
-#endif
 #ifndef FLARE_DEPTH_CHECK
 	#define FLARE_DEPTH_CHECK 0
 #endif
@@ -50,14 +41,14 @@ uniform float3 fAnamFlareColor <
 
 texture texBloom1
 {
-	Width = BUFFER_WIDTH;
-	Height = BUFFER_HEIGHT;
+	Width = BUFFER_WIDTH / 2;
+	Height = BUFFER_HEIGHT / 2;
 	Format = RGBA16F;
 };
 texture texBloom2
 {
-	Width = BUFFER_WIDTH;
-	Height = BUFFER_HEIGHT;
+	Width = BUFFER_WIDTH / 2;
+	Height = BUFFER_HEIGHT / 2;
 	Format = RGBA16F;
 };
 texture texBloom3
