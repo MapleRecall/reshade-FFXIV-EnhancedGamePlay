@@ -111,6 +111,12 @@ uniform int iKeepUIBackgroundBlurAlgorithm <
     ui_items = "Fast\0Balanced\0Smooth\0Downsample 1/4\0Dual Kawase 1/4\0Gaussian 1/4\0";
 > = 1;
 
+uniform bool bKeepUIBlurPreserveEffectLayer <
+    ui_category = "Restore UI";
+    ui_label = "Preserve effect layer";
+    ui_tooltip = "Use FFKeepUIEffectX after effects that should stay sharp behind UI blur. The captured alpha is packed into a single-channel mask from 0 to 0.1 alpha.";
+> = false;
+
 uniform float fKeepUIBackgroundBlurMinAlpha <
     ui_type = "slider";
     ui_category = "Restore UI";
@@ -151,6 +157,8 @@ texture KeepUIX_Tex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; };
 sampler KeepUIX_Sampler { Texture = KeepUIX_Tex; };
 texture KeepUIX_BackgroundTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; };
 sampler KeepUIX_BackgroundSampler { Texture = KeepUIX_BackgroundTex; };
+texture KeepUIX_EffectLayerTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R8; };
+sampler KeepUIX_EffectLayerSampler { Texture = KeepUIX_EffectLayerTex; };
 texture KeepUIX_BackgroundHalfTex { Width = BUFFER_WIDTH / 2; Height = BUFFER_HEIGHT / 2; };
 sampler KeepUIX_BackgroundHalfSampler { Texture = KeepUIX_BackgroundHalfTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
 texture KeepUIX_BackgroundQuarterTex { Width = BUFFER_WIDTH / 4; Height = BUFFER_HEIGHT / 4; };
@@ -163,6 +171,7 @@ static const float2 KeepUIX_PixelSize = float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIG
 static const float2 KeepUIX_HalfPixelSize = float2(BUFFER_RCP_WIDTH * 2.0, BUFFER_RCP_HEIGHT * 2.0);
 static const float2 KeepUIX_QuarterPixelSize = float2(BUFFER_RCP_WIDTH * 4.0, BUFFER_RCP_HEIGHT * 4.0);
 static const float KeepUIX_OpaqueAlpha = 0.999;
+static const float KeepUIX_EffectMaskEndAlpha = 0.1;
 static const int KeepUIX_BlurModeDownsample = 3;
 static const int KeepUIX_BlurModeDualKawase = 4;
 static const int KeepUIX_BlurModeGaussian = 5;
@@ -185,6 +194,17 @@ bool KeepUIUsesLowResBlur()
 void PS_KeepUIBackground(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, texcoord);
+}
+
+void PS_KeepUIEffectLayer(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
+{
+    if (!bKeepUIBlurPreserveEffectLayer)
+    {
+        color = 0.0;
+        return;
+    }
+
+    color = float4(saturate(tex2D(ReShade::BackBuffer, texcoord).a), 0.0, 0.0, 1.0);
 }
 
 void PS_KeepUI(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
@@ -420,6 +440,19 @@ float4 SampleKeepUIBackgroundBlur(float2 texcoord, float radius)
     return tex2D(KeepUIX_BackgroundBlurSampler, texcoord);
 }
 
+float GetKeepUIEffectMask(float2 texcoord)
+{
+    if (!bKeepUIBlurPreserveEffectLayer)
+        return 0.0;
+
+    return saturate(tex2D(KeepUIX_EffectLayerSampler, texcoord).r / KeepUIX_EffectMaskEndAlpha);
+}
+
+float GetKeepUIEffectiveBackgroundBlurMask(float alpha, float2 texcoord)
+{
+    return GetKeepUIBackgroundBlurMask(alpha) * (1.0 - GetKeepUIEffectMask(texcoord));
+}
+
 void PS_BlurUIBackground(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
 {
     if (!bKeepUIBlurBackground || fKeepUIBackgroundBlur <= 0.0) discard;
@@ -427,7 +460,7 @@ void PS_BlurUIBackground(float4 pos : SV_Position, float2 texcoord : TEXCOORD, o
     float4 keep = tex2D(KeepUIX_Sampler, texcoord);
     if (keep.a >= KeepUIX_OpaqueAlpha) discard;
 
-    float blurMask = GetKeepUIBackgroundBlurMask(keep.a);
+    float blurMask = GetKeepUIEffectiveBackgroundBlurMask(keep.a, texcoord);
     if (blurMask <= 0.0) discard;
 
     color = tex2D(ReShade::BackBuffer, texcoord);
@@ -473,7 +506,7 @@ void PS_RestoreUI(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out floa
 
     if (bKeepUIBlurBackground && fKeepUIBackgroundBlur > 0.0)
     {
-        float blurMask = GetKeepUIBackgroundBlurMask(keep.a);
+        float blurMask = GetKeepUIEffectiveBackgroundBlurMask(keep.a, texcoord);
         if (blurMask > 0.0)
         {
             color = tex2D(ReShade::BackBuffer, texcoord);
@@ -497,6 +530,19 @@ technique FFKeepUIBackgroundX <
         VertexShader = PostProcessVS;
         PixelShader = PS_KeepUIBackground;
         RenderTarget = KeepUIX_BackgroundTex;
+    }
+}
+
+technique FFKeepUIEffectX <
+    ui_label = "==  [ FFXIV Keep UI ]  EFFECT LAYER ==============================";
+    ui_tooltip = "Place this after effects that should stay sharp behind UI blur and before UI is rendered. It saves the current alpha into an R8 blur protection mask; 0.1 alpha and above fully disables blur.\n";
+>
+{
+    pass
+    {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_KeepUIEffectLayer;
+        RenderTarget = KeepUIX_EffectLayerTex;
     }
 }
 
