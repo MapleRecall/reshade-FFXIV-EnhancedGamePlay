@@ -26,13 +26,22 @@
 //
 // Lightly optimized by Marot Satil for the GShade project.
 // Special thanks to Sleeps_Hungry for the addition of the FFOccludeUI technique.
+//
+// EnhancedGamePlay KeepUIX additions:
+// - FFKeepUIBackgroundX captures the original image before UI rendering for blur-behind-UI composition.
+// - FFKeepUIEffectX captures an R8 alpha mask for effects that should stay sharp behind UI blur.
+// - FFKeepUIX saves the UI, detects full-screen UI alpha fades, builds optional low-res background blur, and composites it under the saved UI region.
+// - FFRestoreUIX restores the saved UI and compensates it over the optionally blurred background.
+//
+// Background blur and effect-layer filtering need the REST (ReshadeEffectShaderToggler) add-on to bind capture techniques to the correct game shaders.
+// Place FFKeepUIBackgroundX before UI rendering, FFKeepUIEffectX after effects that should be protected but before UI rendering, FFKeepUIX on the UI pass, and FFRestoreUIX near the end.
 
 #ifndef KeepUIDebug
 	#define KeepUIDebug 0 // Set to 1 if you need to use KeepUI's debug features.
 #endif
 
 #ifndef KeepUIExclude
-	#define KeepUIExclude 1
+    #define KeepUIExclude 0
 #endif
 
 #if KeepUIExclude
@@ -93,14 +102,14 @@ uniform float fKeepUIOccludeMinAlpha <
 uniform bool bKeepUIBlurBackground <
     ui_category = "Restore UI";
     ui_label = "Blur UI background";
-    ui_tooltip = "Blur the game image behind restored UI. Strength ramps from the start alpha to the end alpha.";
+    ui_tooltip = "Blur the game image behind restored UI. Requires FFKeepUIBackgroundX to capture the pre-UI image through REST.";
 > = false;
 
 uniform float fKeepUIBackgroundBlur <
     ui_type = "slider";
     ui_category = "Restore UI";
     ui_label = "Background blur";
-    ui_min = 0.0; ui_max = 32.0;
+    ui_min = 0.0; ui_max = 32.0; ui_step = 0.25;
 > = 12.0;
 
 uniform int iKeepUIBackgroundBlurAlgorithm <
@@ -114,15 +123,21 @@ uniform int iKeepUIBackgroundBlurAlgorithm <
 uniform bool bKeepUIBlurPreserveEffectLayer <
     ui_category = "Restore UI";
     ui_label = "Preserve effect layer";
-    ui_tooltip = "Use FFKeepUIEffectX after effects that should stay sharp behind UI blur. The captured alpha is packed into a single-channel mask from 0 to 0.1 alpha.";
+    ui_tooltip = "Use FFKeepUIEffectX through REST after effects that should stay sharp and before UI rendering. The captured alpha is packed into an R8 mask from 0 to 0.1 alpha.";
 > = false;
+
+uniform bool bKeepUIBlurSkipFullscreenUI <
+    ui_category = "Restore UI";
+    ui_label = "Skip fullscreen UI blur";
+    ui_tooltip = "Disable background blur when a low-sample fullscreen test finds UI alpha everywhere. This avoids blurring fade-to-black transition overlays.";
+> = true;
 
 uniform float fKeepUIBackgroundBlurMinAlpha <
     ui_type = "slider";
     ui_category = "Restore UI";
     ui_label = "Background blur start alpha";
     ui_tooltip = "UI alpha where background blur starts. Lower this if highly transparent UI areas are not blurred.";
-    ui_min = 0.0; ui_max = 1.0;
+    ui_min = 0.0; ui_max = 1.0; ui_step = 0.01;
 > = 0.1;
 
 uniform float fKeepUIBackgroundBlurMaxAlpha <
@@ -130,7 +145,7 @@ uniform float fKeepUIBackgroundBlurMaxAlpha <
     ui_category = "Restore UI";
     ui_label = "Background blur end alpha";
     ui_tooltip = "UI alpha where background blur reaches the full slider strength. If this is lower than the start alpha, the two values are swapped.";
-    ui_min = 0.0; ui_max = 1.0;
+    ui_min = 0.0; ui_max = 1.0; ui_step = 0.01;
 > = 0.2;
 
 #if KeepUIDebug
@@ -159,6 +174,8 @@ texture KeepUIX_BackgroundTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; };
 sampler KeepUIX_BackgroundSampler { Texture = KeepUIX_BackgroundTex; };
 texture KeepUIX_EffectLayerTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; Format = R8; };
 sampler KeepUIX_EffectLayerSampler { Texture = KeepUIX_EffectLayerTex; };
+texture KeepUIX_FullscreenUITex { Width = 1; Height = 1; Format = R8; };
+sampler KeepUIX_FullscreenUISampler { Texture = KeepUIX_FullscreenUITex; };
 texture KeepUIX_BackgroundHalfTex { Width = BUFFER_WIDTH / 2; Height = BUFFER_HEIGHT / 2; };
 sampler KeepUIX_BackgroundHalfSampler { Texture = KeepUIX_BackgroundHalfTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
 texture KeepUIX_BackgroundQuarterTex { Width = BUFFER_WIDTH / 4; Height = BUFFER_HEIGHT / 4; };
@@ -172,6 +189,9 @@ static const float2 KeepUIX_HalfPixelSize = float2(BUFFER_RCP_WIDTH * 2.0, BUFFE
 static const float2 KeepUIX_QuarterPixelSize = float2(BUFFER_RCP_WIDTH * 4.0, BUFFER_RCP_HEIGHT * 4.0);
 static const float KeepUIX_OpaqueAlpha = 0.999;
 static const float KeepUIX_EffectMaskEndAlpha = 0.1;
+static const float KeepUIX_FullscreenAlphaThreshold = 0.001;
+static const int KeepUIX_FullscreenAlphaSampleCount = 12;
+static const float2 KeepUIX_FlagTexcoord = float2(0.5, 0.5);
 static const int KeepUIX_BlurModeDownsample = 3;
 static const int KeepUIX_BlurModeDualKawase = 4;
 static const int KeepUIX_BlurModeGaussian = 5;
@@ -188,7 +208,8 @@ float GetKeepUIBackgroundBlurMask(float alpha)
 
 bool KeepUIUsesLowResBlur()
 {
-    return bKeepUIBlurBackground && fKeepUIBackgroundBlur > 0.0 && iKeepUIBackgroundBlurAlgorithm >= KeepUIX_BlurModeDownsample;
+    return bKeepUIBlurBackground && fKeepUIBackgroundBlur > 0.0 && iKeepUIBackgroundBlurAlgorithm >= KeepUIX_BlurModeDownsample
+        && (!bKeepUIBlurSkipFullscreenUI || tex2D(KeepUIX_FullscreenUISampler, KeepUIX_FlagTexcoord).r <= 0.5);
 }
 
 void PS_KeepUIBackground(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
@@ -210,6 +231,25 @@ void PS_KeepUIEffectLayer(float4 pos : SV_Position, float2 texcoord : TEXCOORD, 
 void PS_KeepUI(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
 {
     color = tex2D(ReShade::BackBuffer, texcoord);
+}
+
+void PS_DetectFullscreenUI(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
+{
+    color = 0.0;
+    if (!bKeepUIBlurBackground || !bKeepUIBlurSkipFullscreenUI || fKeepUIBackgroundBlur <= 0.0)
+        return;
+
+    for (int y = 0; y < KeepUIX_FullscreenAlphaSampleCount; y++)
+    {
+        for (int x = 0; x < KeepUIX_FullscreenAlphaSampleCount; x++)
+        {
+            float2 sampleCoord = (float2(x, y) + 0.5) / KeepUIX_FullscreenAlphaSampleCount;
+            if (tex2D(KeepUIX_Sampler, sampleCoord).a <= KeepUIX_FullscreenAlphaThreshold)
+                return;
+        }
+    }
+
+    color = float4(1.0, 0.0, 0.0, 1.0);
 }
 
 #if KeepUIExclude
@@ -256,12 +296,11 @@ void PS_OccludeUI(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out floa
 {
     if (!bKeepUIOcclude) discard;
 
-    color = tex2D(ReShade::BackBuffer, texcoord);
     float4 keep = tex2D(KeepUIX_Sampler, texcoord);
-    if(keep.a > 0)
-    {
-        color = lerp(color, keep * fKeepUIOccludeMinAlpha, keep.a);
-    }
+    if (keep.a <= 0.0) discard;
+
+    color = tex2D(ReShade::BackBuffer, texcoord);
+    color = lerp(color, keep * fKeepUIOccludeMinAlpha, keep.a);
 }
 #endif
 
@@ -450,6 +489,9 @@ float GetKeepUIEffectMask(float2 texcoord)
 
 float GetKeepUIEffectiveBackgroundBlurMask(float alpha, float2 texcoord)
 {
+    if (bKeepUIBlurSkipFullscreenUI && tex2D(KeepUIX_FullscreenUISampler, KeepUIX_FlagTexcoord).r > 0.5)
+        return 0.0;
+
     return GetKeepUIBackgroundBlurMask(alpha) * (1.0 - GetKeepUIEffectMask(texcoord));
 }
 
@@ -458,6 +500,7 @@ void PS_BlurUIBackground(float4 pos : SV_Position, float2 texcoord : TEXCOORD, o
     if (!bKeepUIBlurBackground || fKeepUIBackgroundBlur <= 0.0) discard;
 
     float4 keep = tex2D(KeepUIX_Sampler, texcoord);
+    if (keep.a <= 0.0) discard;
     if (keep.a >= KeepUIX_OpaqueAlpha) discard;
 
     float blurMask = GetKeepUIEffectiveBackgroundBlurMask(keep.a, texcoord);
@@ -497,6 +540,8 @@ void PS_RestoreUI(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out floa
     }
 #endif
 
+    if (keep.a <= 0.0) discard;
+
     if (keep.a >= KeepUIX_OpaqueAlpha)
     {
         color = tex2D(ReShade::BackBuffer, texcoord);
@@ -522,7 +567,7 @@ void PS_RestoreUI(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out floa
 
 technique FFKeepUIBackgroundX <
     ui_label = "==  [ FFXIV Keep UI ]  BACKGROUND ==================================";
-    ui_tooltip = "Place this before the UI is rendered to save the original image without UI for FFKeepUIX background blur.\n";
+    ui_tooltip = "Requires REST. Bind this before UI rendering to save the original image without UI for FFKeepUIX background blur.\n";
 >
 {
     pass
@@ -535,7 +580,7 @@ technique FFKeepUIBackgroundX <
 
 technique FFKeepUIEffectX <
     ui_label = "==  [ FFXIV Keep UI ]  EFFECT LAYER ==============================";
-    ui_tooltip = "Place this after effects that should stay sharp behind UI blur and before UI is rendered. It saves the current alpha into an R8 blur protection mask; 0.1 alpha and above fully disables blur.\n";
+    ui_tooltip = "Requires REST. Bind this after effects that should stay sharp behind UI blur and before UI rendering. It saves current alpha into an R8 mask; 0.1 alpha and above fully disables blur.\n";
 >
 {
     pass
@@ -548,8 +593,8 @@ technique FFKeepUIEffectX <
 
 technique FFKeepUIX <
     ui_label = "==  [ FFXIV Keep UI ]  KEEP =========================================";
-    ui_tooltip = "Place this at the top of your Technique list to save the UI into a texture for restoration with FFRestoreUI.\n"
-                 "To use this Technique, you must also enable \"FFRestoreUI\".\n";
+    ui_tooltip = "Saves UI, detects full-screen alpha fades, and composites optional blur behind UI. For background blur, REST must place FFKeepUIBackgroundX before UI rendering.\n"
+                 "To use this Technique, you must also enable \"FFRestoreUIX\".\n";
 >
 {
     pass
@@ -567,6 +612,13 @@ technique FFKeepUIX <
         RenderTarget = KeepUIX_Tex;
     }
     #endif
+
+    pass
+    {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_DetectFullscreenUI;
+        RenderTarget = KeepUIX_FullscreenUITex;
+    }
     
     #if KeepUIOccludeAssist
     pass
@@ -627,7 +679,7 @@ technique FFKeepUIX <
 
 technique FFRestoreUIX <
     ui_label = "==  [ FFXIV Keep UI ]  RESTORE ======================================";
-    ui_tooltip = "Place this at the bottom of your Technique list to restore the UI texture saved by FFKeepUI.\n"
+    ui_tooltip = "Place this near the end of your Technique list to restore the UI texture saved by FFKeepUIX.\n"
                  "To use this Technique, you must also enable \"FFKeepUIX\".\n";
 >
 {
