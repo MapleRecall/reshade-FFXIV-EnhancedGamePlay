@@ -90,6 +90,43 @@ uniform float fKeepUIOccludeMinAlpha <
 > = 0.8;
 #endif
 
+uniform bool bKeepUIBlurBackground <
+    ui_category = "Restore UI";
+    ui_label = "Blur UI background";
+    ui_tooltip = "Blur the game image behind restored UI. Strength ramps from the start alpha to the end alpha.";
+> = false;
+
+uniform float fKeepUIBackgroundBlur <
+    ui_type = "slider";
+    ui_category = "Restore UI";
+    ui_label = "Background blur";
+    ui_min = 0.0; ui_max = 32.0;
+> = 12.0;
+
+uniform int iKeepUIBackgroundBlurAlgorithm <
+    ui_type = "combo";
+    ui_category = "Restore UI";
+    ui_label = "Background blur algorithm";
+    ui_tooltip = "Full-res modes sample only UI pixels. Low-res modes downsample the saved background for smoother large-radius blur.";
+    ui_items = "Fast\0Balanced\0Smooth\0Downsample 1/4\0Dual Kawase 1/4\0Gaussian 1/4\0";
+> = 1;
+
+uniform float fKeepUIBackgroundBlurMinAlpha <
+    ui_type = "slider";
+    ui_category = "Restore UI";
+    ui_label = "Background blur start alpha";
+    ui_tooltip = "UI alpha where background blur starts. Lower this if highly transparent UI areas are not blurred.";
+    ui_min = 0.0; ui_max = 1.0;
+> = 0.1;
+
+uniform float fKeepUIBackgroundBlurMaxAlpha <
+    ui_type = "slider";
+    ui_category = "Restore UI";
+    ui_label = "Background blur end alpha";
+    ui_tooltip = "UI alpha where background blur reaches the full slider strength. If this is lower than the start alpha, the two values are swapped.";
+    ui_min = 0.0; ui_max = 1.0;
+> = 0.2;
+
 #if KeepUIDebug
 uniform bool bTroubleshootOpacityIssue <
     ui_category = "Troubleshooting";
@@ -112,8 +149,43 @@ uniform int iBlendSource <
 
 texture KeepUIX_Tex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; };
 sampler KeepUIX_Sampler { Texture = KeepUIX_Tex; };
+texture KeepUIX_BackgroundTex { Width = BUFFER_WIDTH; Height = BUFFER_HEIGHT; };
+sampler KeepUIX_BackgroundSampler { Texture = KeepUIX_BackgroundTex; };
+texture KeepUIX_BackgroundHalfTex { Width = BUFFER_WIDTH / 2; Height = BUFFER_HEIGHT / 2; };
+sampler KeepUIX_BackgroundHalfSampler { Texture = KeepUIX_BackgroundHalfTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
+texture KeepUIX_BackgroundQuarterTex { Width = BUFFER_WIDTH / 4; Height = BUFFER_HEIGHT / 4; };
+sampler KeepUIX_BackgroundQuarterSampler { Texture = KeepUIX_BackgroundQuarterTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
+texture KeepUIX_BackgroundBlurTempTex { Width = BUFFER_WIDTH / 4; Height = BUFFER_HEIGHT / 4; };
+sampler KeepUIX_BackgroundBlurTempSampler { Texture = KeepUIX_BackgroundBlurTempTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
+texture KeepUIX_BackgroundBlurTex { Width = BUFFER_WIDTH / 4; Height = BUFFER_HEIGHT / 4; };
+sampler KeepUIX_BackgroundBlurSampler { Texture = KeepUIX_BackgroundBlurTex; MinFilter = LINEAR; MagFilter = LINEAR; MipFilter = POINT; AddressU = CLAMP; AddressV = CLAMP; };
+static const float2 KeepUIX_PixelSize = float2(BUFFER_RCP_WIDTH, BUFFER_RCP_HEIGHT);
+static const float2 KeepUIX_HalfPixelSize = float2(BUFFER_RCP_WIDTH * 2.0, BUFFER_RCP_HEIGHT * 2.0);
+static const float2 KeepUIX_QuarterPixelSize = float2(BUFFER_RCP_WIDTH * 4.0, BUFFER_RCP_HEIGHT * 4.0);
+static const float KeepUIX_OpaqueAlpha = 0.999;
+static const int KeepUIX_BlurModeDownsample = 3;
+static const int KeepUIX_BlurModeDualKawase = 4;
+static const int KeepUIX_BlurModeGaussian = 5;
 static const float3 LightTheme = float3(247.0 / 255.0, 218.0 / 255.0, 181.0 / 255.0);
 static const float3 BlueTheme = float3(37.0 / 255.0, 0.0 / 255.0, 158.0 / 255.0);
+
+float GetKeepUIBackgroundBlurMask(float alpha)
+{
+    float blurStartAlpha = min(fKeepUIBackgroundBlurMinAlpha, fKeepUIBackgroundBlurMaxAlpha);
+    float blurEndAlpha = max(fKeepUIBackgroundBlurMinAlpha, fKeepUIBackgroundBlurMaxAlpha);
+
+    return saturate((alpha - blurStartAlpha) / max(blurEndAlpha - blurStartAlpha, 0.001));
+}
+
+bool KeepUIUsesLowResBlur()
+{
+    return bKeepUIBlurBackground && fKeepUIBackgroundBlur > 0.0 && iKeepUIBackgroundBlurAlgorithm >= KeepUIX_BlurModeDownsample;
+}
+
+void PS_KeepUIBackground(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
+{
+    color = tex2D(ReShade::BackBuffer, texcoord);
+}
 
 void PS_KeepUI(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
 {
@@ -173,6 +245,197 @@ void PS_OccludeUI(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out floa
 }
 #endif
 
+float4 SampleKeepUIBox4(float2 texcoord, sampler sourceSampler, float2 sourcePixelSize)
+{
+    float2 offset = sourcePixelSize * 0.5;
+    float4 color = tex2D(sourceSampler, texcoord + float2(-offset.x, -offset.y));
+    color += tex2D(sourceSampler, texcoord + float2( offset.x, -offset.y));
+    color += tex2D(sourceSampler, texcoord + float2(-offset.x,  offset.y));
+    color += tex2D(sourceSampler, texcoord + float2( offset.x,  offset.y));
+
+    return color * 0.25;
+}
+
+float4 SampleKeepUIKawase4(float2 texcoord, sampler sourceSampler, float2 sourcePixelSize, float radius)
+{
+    float2 offset = sourcePixelSize * radius;
+    float4 color = tex2D(sourceSampler, texcoord + float2( offset.x,  offset.y));
+    color += tex2D(sourceSampler, texcoord + float2(-offset.x,  offset.y));
+    color += tex2D(sourceSampler, texcoord + float2( offset.x, -offset.y));
+    color += tex2D(sourceSampler, texcoord + float2(-offset.x, -offset.y));
+
+    return color * 0.25;
+}
+
+float4 SampleKeepUIGaussian9(float2 texcoord, sampler sourceSampler, float2 sourcePixelSize, bool isVertical)
+{
+    float2 axis = isVertical ? float2(0.0, sourcePixelSize.y) : float2(sourcePixelSize.x, 0.0);
+    axis *= max(fKeepUIBackgroundBlur * 0.25, 0.25);
+
+    float4 color = tex2D(sourceSampler, texcoord) * 0.227027;
+    color += tex2D(sourceSampler, texcoord + axis * 1.0) * 0.194595;
+    color += tex2D(sourceSampler, texcoord - axis * 1.0) * 0.194595;
+    color += tex2D(sourceSampler, texcoord + axis * 2.0) * 0.121622;
+    color += tex2D(sourceSampler, texcoord - axis * 2.0) * 0.121622;
+    color += tex2D(sourceSampler, texcoord + axis * 3.0) * 0.054054;
+    color += tex2D(sourceSampler, texcoord - axis * 3.0) * 0.054054;
+    color += tex2D(sourceSampler, texcoord + axis * 4.0) * 0.016216;
+    color += tex2D(sourceSampler, texcoord - axis * 4.0) * 0.016216;
+
+    return color;
+}
+
+void PS_KeepUIBackgroundDownsampleHalf(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
+{
+    if (!KeepUIUsesLowResBlur()) discard;
+
+    color = SampleKeepUIBox4(texcoord, KeepUIX_BackgroundSampler, KeepUIX_PixelSize);
+}
+
+void PS_KeepUIBackgroundDownsampleQuarter(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
+{
+    if (!KeepUIUsesLowResBlur()) discard;
+
+    color = SampleKeepUIBox4(texcoord, KeepUIX_BackgroundHalfSampler, KeepUIX_HalfPixelSize);
+}
+
+void PS_KeepUIBackgroundKawaseA(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
+{
+    if (iKeepUIBackgroundBlurAlgorithm != KeepUIX_BlurModeDualKawase || !KeepUIUsesLowResBlur()) discard;
+
+    color = SampleKeepUIKawase4(texcoord, KeepUIX_BackgroundQuarterSampler, KeepUIX_QuarterPixelSize, max(fKeepUIBackgroundBlur * 0.125, 0.75));
+}
+
+void PS_KeepUIBackgroundKawaseB(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
+{
+    if (iKeepUIBackgroundBlurAlgorithm != KeepUIX_BlurModeDualKawase || !KeepUIUsesLowResBlur()) discard;
+
+    color = SampleKeepUIKawase4(texcoord, KeepUIX_BackgroundBlurTempSampler, KeepUIX_QuarterPixelSize, max(fKeepUIBackgroundBlur * 0.0625, 0.5));
+}
+
+void PS_KeepUIBackgroundGaussianH(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
+{
+    if (iKeepUIBackgroundBlurAlgorithm != KeepUIX_BlurModeGaussian || !KeepUIUsesLowResBlur()) discard;
+
+    color = SampleKeepUIGaussian9(texcoord, KeepUIX_BackgroundQuarterSampler, KeepUIX_QuarterPixelSize, false);
+}
+
+void PS_KeepUIBackgroundGaussianV(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
+{
+    if (iKeepUIBackgroundBlurAlgorithm != KeepUIX_BlurModeGaussian || !KeepUIUsesLowResBlur()) discard;
+
+    color = SampleKeepUIGaussian9(texcoord, KeepUIX_BackgroundBlurTempSampler, KeepUIX_QuarterPixelSize, true);
+}
+
+float4 SampleKeepUIBackgroundOffset(float2 texcoord, float2 pixelOffset, float2 offset)
+{
+    return tex2D(KeepUIX_BackgroundSampler, texcoord + pixelOffset * offset);
+}
+
+float4 SampleKeepUIBackgroundBlurFast(float2 texcoord, float radius)
+{
+    float2 pixelOffset = KeepUIX_PixelSize * radius;
+    float4 blur = tex2D(KeepUIX_BackgroundSampler, texcoord) * 0.28;
+
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.90,  0.00)) * 0.18;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.90,  0.00)) * 0.18;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.00,  0.90)) * 0.18;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.00, -0.90)) * 0.18;
+
+    return blur;
+}
+
+float4 SampleKeepUIBackgroundBlurBalanced(float2 texcoord, float radius)
+{
+    float2 pixelOffset = KeepUIX_PixelSize * radius;
+    float4 blur = tex2D(KeepUIX_BackgroundSampler, texcoord) * 0.16;
+
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.55,  0.00)) * 0.06;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.55,  0.00)) * 0.06;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.00,  0.55)) * 0.06;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.00, -0.55)) * 0.06;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.39,  0.39)) * 0.06;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.39,  0.39)) * 0.06;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.39, -0.39)) * 0.06;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.39, -0.39)) * 0.06;
+
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 1.06,  0.44)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.44,  1.06)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.44,  1.06)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-1.06,  0.44)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-1.06, -0.44)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.44, -1.06)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.44, -1.06)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 1.06, -0.44)) * 0.045;
+
+    return blur;
+}
+
+float4 SampleKeepUIBackgroundBlurSmooth(float2 texcoord, float radius)
+{
+    float2 pixelOffset = KeepUIX_PixelSize * radius;
+    float4 blur = tex2D(KeepUIX_BackgroundSampler, texcoord) * 0.10;
+
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.42,  0.00)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.42,  0.00)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.00,  0.42)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.00, -0.42)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.30,  0.30)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.30,  0.30)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.30, -0.30)) * 0.045;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.30, -0.30)) * 0.045;
+
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.33,  0.78)) * 0.035;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.33,  0.78)) * 0.035;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.78,  0.33)) * 0.035;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.78, -0.33)) * 0.035;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.33, -0.78)) * 0.035;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.33, -0.78)) * 0.035;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.78, -0.33)) * 0.035;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.78,  0.33)) * 0.035;
+
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.26,  1.32)) * 0.0325;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.75,  1.12)) * 0.0325;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-1.32,  0.26)) * 0.0325;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-1.12, -0.75)) * 0.0325;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2(-0.26, -1.32)) * 0.0325;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 0.75, -1.12)) * 0.0325;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 1.32, -0.26)) * 0.0325;
+    blur += SampleKeepUIBackgroundOffset(texcoord, pixelOffset, float2( 1.12,  0.75)) * 0.0325;
+
+    return blur;
+}
+
+float4 SampleKeepUIBackgroundBlur(float2 texcoord, float radius)
+{
+    if (iKeepUIBackgroundBlurAlgorithm <= 0)
+        return SampleKeepUIBackgroundBlurFast(texcoord, radius);
+    else if (iKeepUIBackgroundBlurAlgorithm == 1)
+        return SampleKeepUIBackgroundBlurBalanced(texcoord, radius);
+    else if (iKeepUIBackgroundBlurAlgorithm == 2)
+        return SampleKeepUIBackgroundBlurSmooth(texcoord, radius);
+    else if (iKeepUIBackgroundBlurAlgorithm == KeepUIX_BlurModeDownsample)
+        return tex2D(KeepUIX_BackgroundQuarterSampler, texcoord);
+
+    return tex2D(KeepUIX_BackgroundBlurSampler, texcoord);
+}
+
+void PS_BlurUIBackground(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
+{
+    if (!bKeepUIBlurBackground || fKeepUIBackgroundBlur <= 0.0) discard;
+
+    float4 keep = tex2D(KeepUIX_Sampler, texcoord);
+    if (keep.a >= KeepUIX_OpaqueAlpha) discard;
+
+    float blurMask = GetKeepUIBackgroundBlurMask(keep.a);
+    if (blurMask <= 0.0) discard;
+
+    color = tex2D(ReShade::BackBuffer, texcoord);
+    float3 savedBackground = tex2D(KeepUIX_BackgroundSampler, texcoord).rgb;
+    float3 blurredBackground = SampleKeepUIBackgroundBlur(texcoord, fKeepUIBackgroundBlur * blurMask).rgb;
+    color.rgb = lerp(savedBackground, blurredBackground, blurMask);
+}
+
 void PS_RestoreUI(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out float4 color : SV_Target)
 {
     const float4 keep = tex2D(KeepUIX_Sampler, texcoord);
@@ -201,8 +464,40 @@ void PS_RestoreUI(float4 pos : SV_Position, float2 texcoord : TEXCOORD, out floa
     }
 #endif
 
+    if (keep.a >= KeepUIX_OpaqueAlpha)
+    {
+        color = tex2D(ReShade::BackBuffer, texcoord);
+        color.rgb = keep.rgb;
+        return;
+    }
+
+    if (bKeepUIBlurBackground && fKeepUIBackgroundBlur > 0.0)
+    {
+        float blurMask = GetKeepUIBackgroundBlurMask(keep.a);
+        if (blurMask > 0.0)
+        {
+            color = tex2D(ReShade::BackBuffer, texcoord);
+            float3 savedBackground = tex2D(KeepUIX_BackgroundSampler, texcoord).rgb;
+            color.rgb = keep.rgb + (color.rgb - savedBackground) * (1.0 - keep.a);
+            return;
+        }
+    }
+
     color = tex2D(ReShade::BackBuffer, texcoord);
     color.rgb = lerp(color.rgb, keep.rgb, keep.a).rgb;
+}
+
+technique FFKeepUIBackgroundX <
+    ui_label = "==  [ FFXIV Keep UI ]  BACKGROUND ==================================";
+    ui_tooltip = "Place this before the UI is rendered to save the original image without UI for FFKeepUIX background blur.\n";
+>
+{
+    pass
+    {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_KeepUIBackground;
+        RenderTarget = KeepUIX_BackgroundTex;
+    }
 }
 
 technique FFKeepUIX <
@@ -234,6 +529,54 @@ technique FFKeepUIX <
         PixelShader = PS_OccludeUI;
     }
     #endif
+
+    pass
+    {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_KeepUIBackgroundDownsampleHalf;
+        RenderTarget = KeepUIX_BackgroundHalfTex;
+    }
+
+    pass
+    {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_KeepUIBackgroundDownsampleQuarter;
+        RenderTarget = KeepUIX_BackgroundQuarterTex;
+    }
+
+    pass
+    {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_KeepUIBackgroundKawaseA;
+        RenderTarget = KeepUIX_BackgroundBlurTempTex;
+    }
+
+    pass
+    {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_KeepUIBackgroundKawaseB;
+        RenderTarget = KeepUIX_BackgroundBlurTex;
+    }
+
+    pass
+    {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_KeepUIBackgroundGaussianH;
+        RenderTarget = KeepUIX_BackgroundBlurTempTex;
+    }
+
+    pass
+    {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_KeepUIBackgroundGaussianV;
+        RenderTarget = KeepUIX_BackgroundBlurTex;
+    }
+
+    pass
+    {
+        VertexShader = PostProcessVS;
+        PixelShader = PS_BlurUIBackground;
+    }
 }
 
 technique FFRestoreUIX <
